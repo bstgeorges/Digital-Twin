@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+anthropic
+pydantic
+# optional — enables semantic memory search (keyword fallback used if absent):
+# sentence-transformers

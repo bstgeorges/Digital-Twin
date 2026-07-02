@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Digital Twin Assistant</title>
+<style>
+  :root { --bg:#0f1117; --panel:#181b25; --border:#2a2e3d; --text:#e6e8ef;
+          --muted:#9aa0b4; --accent:#6c8cff; --ok:#4caf7d; --warn:#e0a94f; --danger:#e06c6c; }
+  * { box-sizing:border-box; margin:0; }
+  body { font:14px/1.5 -apple-system,Segoe UI,sans-serif; background:var(--bg);
+         color:var(--text); height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px;
+           border-bottom:1px solid var(--border); }
+  header h1 { font-size:15px; font-weight:600; }
+  header .spacer { flex:1; }
+  select,input[type=text],textarea { background:var(--panel); color:var(--text);
+      border:1px solid var(--border); border-radius:6px; padding:6px 8px; font:inherit; }
+  label.toggle { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:13px; cursor:pointer; }
+  main { flex:1; display:flex; min-height:0; }
+  #chatCol { flex:2; display:flex; flex-direction:column; border-right:1px solid var(--border); }
+  #msgs { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:80%; padding:10px 12px; border-radius:10px; white-space:pre-wrap; }
+  .msg.user { align-self:flex-end; background:var(--accent); color:#fff; }
+  .msg.bot  { align-self:flex-start; background:var(--panel); border:1px solid var(--border); }
+  .msg .meta { margin-top:6px; font-size:11px; color:var(--muted); }
+  #composer { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--border); }
+  #composer textarea { flex:1; resize:none; height:44px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px;
+           padding:8px 14px; font:inherit; cursor:pointer; }
+  button.small { padding:2px 8px; font-size:12px; }
+  button.ok { background:var(--ok); } button.warn { background:var(--warn); color:#222; }
+  button.danger { background:var(--danger); }
+  aside { flex:1; min-width:340px; max-width:440px; overflow-y:auto; padding:14px; }
+  aside h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em;
+             color:var(--muted); margin:14px 0 8px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px;
+          padding:9px 11px; margin-bottom:7px; }
+  .card .tags { font-size:11px; color:var(--muted); margin-bottom:3px; }
+  .tag { display:inline-block; padding:0 6px; border-radius:8px; border:1px solid var(--border); margin-right:4px; }
+  .tag.private { border-color:var(--warn); color:var(--warn); }
+  .card .actions { margin-top:6px; display:flex; gap:6px; }
+  #pending .card { border-color:var(--warn); }
+  #addForm { display:flex; flex-direction:column; gap:6px; }
+  #addForm .row { display:flex; gap:6px; }
+  #logs { font-size:11px; color:var(--muted); }
+  #logs div { padding:2px 0; border-bottom:1px solid var(--border); }
+  .empty { color:var(--muted); font-size:13px; font-style:italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Digital Twin Assistant</h1>
+  <select id="user"></select>
+  <label class="toggle"><input type="checkbox" id="includePrivate">
+    include private memories</label>
+  <div class="spacer"></div>
+  <span id="status" style="color:var(--muted);font-size:12px"></span>
+</header>
+<main>
+  <div id="chatCol">
+    <div id="msgs"></div>
+    <div id="composer">
+      <textarea id="input" placeholder="Message… (Enter to send)"></textarea>
+      <button id="send">Send</button>
+    </div>
+  </div>
+  <aside>
+    <h2>Pending approval</h2>
+    <div id="pending"><div class="empty">Nothing waiting.</div></div>
+
+    <h2>Approved memories</h2>
+    <div id="approved"><div class="empty">No memories yet.</div></div>
+
+    <h2>Add memory</h2>
+    <form id="addForm">
+      <div class="row">
+        <select id="mType">
+          <option>preference</option><option>fact</option><option>project</option>
+          <option>style</option><option>constraint</option>
+        </select>
+        <select id="mSens"><option>low</option><option>private</option></select>
+      </div>
+      <input type="text" id="mContent" placeholder="e.g. Prefers concise, direct answers">
+      <button type="submit" class="small">Add</button>
+    </form>
+
+    <h2>Recent activity</h2>
+    <div id="logs"></div>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let history = [];
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+  return r.json();
+}
+
+async function init() {
+  const users = await api('/users');
+  $('user').innerHTML = users.map(u => `<option>${u}</option>`).join('');
+  $('user').onchange = () => { history = []; $('msgs').innerHTML = ''; refresh(); };
+  refresh();
+}
+
+function memCard(m, pending) {
+  const d = document.createElement('div'); d.className = 'card';
+  d.innerHTML = `<div class="tags"><span class="tag">${m.type}</span>` +
+    `<span class="tag ${m.sensitivity}">${m.sensitivity}</span>` +
+    `<span class="tag">${m.source}</span></div><div>${m.content}</div>`;
+  const a = document.createElement('div'); a.className = 'actions';
+  if (pending) {
+    a.append(btn('Approve','ok', () => act(`/memories/${m.id}/approve`)),
+             btn('Reject','danger', () => act(`/memories/${m.id}/reject`)));
+  } else {
+    a.append(btn('Delete','danger', () => act(`/memories/${m.id}`, 'DELETE')));
+  }
+  d.append(a); return d;
+}
+function btn(t, cls, fn) { const b = document.createElement('button');
+  b.textContent = t; b.className = 'small ' + cls; b.onclick = fn; return b; }
+async function act(path, method='POST') { await api(path, {method}); refresh(); }
+
+async function refresh() {
+  const u = $('user').value;
+  const [pending, approved, logs] = await Promise.all([
+    api(`/memories?user=${u}&status=proposed`),
+    api(`/memories?user=${u}&status=approved`),
+    api('/logs?limit=15')]);
+  render('pending', pending, true, 'Nothing waiting.');
+  render('approved', approved, false, 'No memories yet.');
+  $('logs').innerHTML = logs.map(l =>
+    `<div>${new Date(l.ts*1000).toLocaleTimeString()} — ${l.action}` +
+    (l.id ? ` (${l.id})` : '') + `</div>`).join('');
+}
+function render(id, items, pending, emptyMsg) {
+  const el = $(id); el.innerHTML = '';
+  if (!items.length) { el.innerHTML = `<div class="empty">${emptyMsg}</div>`; return; }
+  items.forEach(m => el.append(memCard(m, pending)));
+}
+
+function addMsg(text, cls, meta) {
+  const d = document.createElement('div'); d.className = 'msg ' + cls;
+  d.textContent = text;
+  if (meta) { const m = document.createElement('div'); m.className = 'meta';
+    m.textContent = meta; d.append(m); }
+  $('msgs').append(d); $('msgs').scrollTop = $('msgs').scrollHeight;
+}
+
+async function send() {
+  const text = $('input').value.trim(); if (!text) return;
+  $('input').value = ''; addMsg(text, 'user');
+  $('status').textContent = 'thinking…';
+  try {
+    const r = await api('/chat', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({user: $('user').value, message: text,
+        include_private: $('includePrivate').checked, history})});
+    const used = r.memories_used.length ?
+      `used ${r.memories_used.length} memories: ` +
+      r.memories_used.map(m => m.type).join(', ') : 'no memories used';
+    addMsg(r.answer, 'bot', used);
+    history.push({role:'user',content:text},{role:'assistant',content:r.answer});
+    refresh();
+  } catch (e) { addMsg('Error: ' + e.message, 'bot'); }
+  $('status').textContent = '';
+}
+$('send').onclick = send;
+$('input').onkeydown = e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+$('addForm').onsubmit = async e => {
+  e.preventDefault();
+  const content = $('mContent').value.trim(); if (!content) return;
+  await api('/memories', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({user: $('user').value, type: $('mType').value,
+      content, sensitivity: $('mSens').value})});
+  $('mContent').value = ''; refresh();
+};
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+memory.db
+actions.jsonl
+eval_report_*.md
+.env
+.DS_Store
